@@ -1,6 +1,11 @@
-package main;
-
-import static net.i2p.crypto.eddsa.Utils.hexToBytes;
+import main.crypto.Blake2b.Digest;
+import net.i2p.crypto.eddsa.EdDSAEngine;
+import net.i2p.crypto.eddsa.EdDSAPrivateKey;
+import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable;
+import net.i2p.crypto.eddsa.spec.EdDSAParameterSpec;
+import org.aion.rlp.RLP;
+import org.aion.rlp.RLPElement;
+import org.aion.rlp.RLPList;
 
 import java.math.BigInteger;
 import java.security.InvalidKeyException;
@@ -10,13 +15,8 @@ import java.security.SignatureException;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Arrays;
-import main.crypto.Blake2b.Digest;
-import net.i2p.crypto.eddsa.EdDSAEngine;
-import net.i2p.crypto.eddsa.EdDSAPrivateKey;
-import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable;
-import net.i2p.crypto.eddsa.spec.EdDSAParameterSpec;
-import org.aion.rlp.RLP;
-import org.aion.rlp.RLPList;
+
+import static net.i2p.crypto.eddsa.Utils.hexToBytes;
 
 /**
  * A convenience class for building an Aion transaction and signing it locally (offline) using a
@@ -47,6 +47,7 @@ public final class SignedTransactionBuilder {
     private byte[] data = null;
     private long energyPrice = -1;
     private byte type = 0x1;
+    private byte[] beaconHash = null;
 
     /**
      * The private key used to sign the transaction with.
@@ -143,6 +144,11 @@ public final class SignedTransactionBuilder {
         return this;
     }
 
+    public SignedTransactionBuilder beaconHash(byte[] hash) {
+        this.beaconHash = hash;
+        return this;
+    }
+
     /**
      * Constructs a transaction whose fields correspond to the fields as they have been set by the
      * provided builder methods, and signs this transaction with the provided private key.
@@ -183,7 +189,6 @@ public final class SignedTransactionBuilder {
 
         byte[] nonce = this.nonce.toByteArray();
         byte[] timestamp = BigInteger.valueOf(System.currentTimeMillis() * 1000).toByteArray();
-
         byte[] encodedNonce = RLP.encodeElement(nonce);
         byte[] encodedTo = RLP.encodeElement(to);
         byte[] encodedValue = RLP.encodeElement(value);
@@ -193,7 +198,23 @@ public final class SignedTransactionBuilder {
         byte[] encodedEnergyPrice = RLP.encodeLong((this.energyPrice == -1) ? 10_000_000_000L : this.energyPrice);
         byte[] encodedType = RLP.encodeByte(this.type);
 
-        byte[] fullEncoding = RLP.encodeList(encodedNonce, encodedTo, encodedValue, encodedData, encodedTimestamp, encodedEnergy, encodedEnergyPrice, encodedType);
+        final byte[] fullEncoding;
+        final byte[] shapeIdEncoded;
+        final byte[] beaconHashEncoded;
+        if(beaconHash == null) {
+            beaconHashEncoded = null;
+            shapeIdEncoded = null;
+
+            fullEncoding = RLP.encodeList(encodedNonce, encodedTo, encodedValue, encodedData, encodedTimestamp,
+                    encodedEnergy, encodedEnergyPrice, encodedType);
+        } else {
+            // For details, see https://aionnetwork.atlassian.net/wiki/spaces/TE/pages/292389035/Transaction+RLP+Encoding
+            beaconHashEncoded = RLP.encodeElement(beaconHash);
+            byte shapeId = (byte)1;
+            shapeIdEncoded = RLP.encodeByte(shapeId);
+            fullEncoding = RLP.encodeList(encodedNonce, encodedTo, encodedValue, encodedData, encodedTimestamp,
+                    encodedEnergy, encodedEnergyPrice, encodedType, shapeIdEncoded, beaconHashEncoded);
+        }
 
         byte[] rawHash = blake2b(fullEncoding);
         byte[] signatureOnly = sign(privateKey, rawHash);
@@ -202,7 +223,16 @@ public final class SignedTransactionBuilder {
         System.arraycopy(signatureOnly, 0, preEncodeSignature, publicKey.length, signatureOnly.length);
         byte[] signature = RLP.encodeElement(preEncodeSignature);
 
-        return RLP.encodeList(encodedNonce, encodedTo, encodedValue, encodedData, encodedTimestamp, encodedEnergy, encodedEnergyPrice, encodedType, signature);
+        if(beaconHash == null) {
+            return RLP.encodeList(encodedNonce, encodedTo, encodedValue,
+                    encodedData, encodedTimestamp, encodedEnergy,
+                    encodedEnergyPrice, encodedType, signature);
+        } else {
+            return RLP.encodeList(encodedNonce, encodedTo, encodedValue,
+                    encodedData, encodedTimestamp, encodedEnergy,
+                    encodedEnergyPrice, encodedType, signature,
+                    shapeIdEncoded, beaconHashEncoded);
+        }
     }
 
     /**
